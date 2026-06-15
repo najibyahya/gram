@@ -3,10 +3,17 @@ import urllib.parse
 import time
 import sys
 import threading
+import random
+import os
 from fake_useragent import UserAgent
+from datetime import datetime
+
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, DataTable, RichLog, Label, Static
+from textual.containers import Vertical, Horizontal
 
 ua = UserAgent()
-lock = threading.Lock()
+UI_APP = None
 
 def load_all_init_data(file_path="data.txt"):
     try:
@@ -20,14 +27,33 @@ def load_all_init_data(file_path="data.txt"):
                 accounts.append({
                     "id": i,
                     "init_data": content,
-                    "username": f"Account-{i}"
+                    "username": f"Account-{i}",
+                    "proxy": None
                 })
-        print(f"Loaded {len(accounts)} accounts from data.txt\n")
         return accounts
     except Exception as e:
-        print(f"Failed to load data.txt: {e}")
-        sys.exit(1)
+        return []
 
+def load_proxies(file_path="proxy.txt"):
+    try:
+        if not os.path.exists(file_path):
+            return []
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        
+        proxies = []
+        for line in lines:
+            proxy = line.strip()
+            if proxy and not proxy.startswith("user:pass"):
+                proxies.append(proxy)
+        return proxies
+    except Exception as e:
+        return []
+
+def get_random_proxy(proxies):
+    if not proxies:
+        return None
+    return random.choice(proxies)
 
 def get_headers():
     return {
@@ -35,78 +61,114 @@ def get_headers():
         "User-Agent": ua.random
     }
 
-
-def api_request(method, endpoint, init_data, payload=None):
+def api_request(method, endpoint, init_data, payload=None, proxy=None):
     base_url = "https://app.gramnetwork.online/api/"
     url = base_url + endpoint
-    headers = get_headers()
+    
+    headers = {
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "origin": "https://app.gramnetwork.online",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "referer": "https://app.gramnetwork.online/",
+        "sec-ch-ua": '"Not)A;Brand";v="24", "Microsoft Edge WebView2";v="149", "Microsoft Edge";v="149", "Chromium";v="149"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0"
+    }
+    
+    proxies = None
+    if proxy:
+        proxies = {"http": proxy, "https": proxy}
     
     try:
         if method == "GET":
-            encoded = urllib.parse.quote(init_data)
-            full_url = f"{url}?initData={encoded}"
-            resp = requests.get(full_url, headers=headers, timeout=30)
+            full_url = f"{url}?initData={init_data}"
+            resp = requests.get(full_url, headers=headers, proxies=proxies, timeout=30)
         else:
-            data = {"initData": init_data}
+            headers["content-type"] = "application/x-www-form-urlencoded"
+            body = f"initData={init_data}"
             if payload:
-                data.update(payload)
-            resp = requests.post(url, data=data, headers=headers, timeout=30)
+                for k, v in payload.items():
+                    body += f"&{k}={v}"
+            resp = requests.post(url, data=body, headers=headers, proxies=proxies, timeout=30)
         
-        return resp.json() if resp.status_code == 200 else {"success": False}
-    except:
-        return {"success": False}
+        try:
+            return resp.json()
+        except:
+            return {"success": False, "raw_text": resp.text[:100]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
+def ui_log(account_id, message):
+    if UI_APP:
+        UI_APP.call_from_thread(UI_APP.add_account_log, account_id, message)
 
-def claim_mining(init_data, username):
-    with lock:
-        print(f"\n? Claim Mining for {username} ... ", end="")
+def ui_update(account_id, column, value):
+    if UI_APP:
+        UI_APP.call_from_thread(UI_APP.update_account_table, account_id, column, value)
+
+def claim_mining(account_id, init_data, username, proxy):
+    ui_log(account_id, f"[?] Claim Mining for {username} ...")
+    ui_update(account_id, "mining_status", "Claiming Mining...")
     for attempt in range(1, 6):
-        result = api_request("POST", "claim_mining.php", init_data)
+        result = api_request("POST", "claim_mining.php", init_data, proxy=proxy)
         if result.get('success'):
-            with lock:
-                print("SUCCESS")
+            ui_log(account_id, "✅ Claim Mining SUCCESS")
             return True
         time.sleep(5)
-    with lock:
-        print("FAILED after retries")
+    ui_log(account_id, "❌ Claim Mining FAILED after retries")
     return False
 
-
-def start_mining(init_data, username):
-    with lock:
-        print(f"? Starting Mining for {username} ... ", end="")
-    result = api_request("POST", "start_mining.php", init_data)
-    with lock:
-        print("SUCCESS" if result.get('success') else "FAILED")
-    return result.get('success', False)
-
+def start_mining(account_id, init_data, username, proxy):
+    ui_log(account_id, f"[?] Starting Mining for {username} ...")
+    ui_update(account_id, "mining_status", "Starting Mining...")
+    result = api_request("POST", "start_mining.php", init_data, proxy=proxy)
+    if result.get('success'):
+        ui_log(account_id, "✅ Start Mining SUCCESS")
+        return True
+    else:
+        ui_log(account_id, "❌ Start Mining FAILED")
+        return False
 
 def mining_worker(account):
+    acc_id = account['id']
+    ui_log(acc_id, f"Mining Worker started for {account['username']} (Proxy: {account['proxy'] or 'Tanpa Proxy'})")
+    
     while True:
         try:
-            result = api_request("GET", "get_user_data.php", account["init_data"])
+            ui_update(acc_id, "mining_status", "Fetching User Data...")
+            result = api_request("GET", "get_user_data.php", account["init_data"], proxy=account["proxy"])
+            
             if not result.get("success") or "user" not in result:
+                ui_log(acc_id, f"Failed to get user data: {result}")
+                ui_update(acc_id, "mining_status", "Data Fetch Failed (Retrying)")
                 time.sleep(10)
                 continue
 
             user = result["user"]
             account["username"] = user.get("username", account["username"])
-
             time_left = user.get('time_left', '00:00:00')
 
-            with lock:
-                print("\n" + "="*70)
-                print(f"Username       : {account['username']}")
-                print(f"Total Balance  : {user.get('total_balance', '0')} GRM")
-                print(f"Tokens Earned  : {user.get('tokens_earned', '0')} GRM")
-                print(f"Energy         : {user.get('energy', '0')}")
-                print(f"Time Left      : {time_left}")
-                print("="*70)
+            ui_update(acc_id, "username", account["username"])
+            ui_update(acc_id, "balance", f"{user.get('total_balance', '0')} ({user.get('usd_balance', '0')} USD)")
+            ui_update(acc_id, "tokens", str(user.get('tokens_earned', '0')))
+            ui_update(acc_id, "energy", str(user.get('energy', '0')))
+            ui_update(acc_id, "referrals", str(user.get('total_referrals', '0')))
+            ui_update(acc_id, "rate", str(user.get('mining_rate', '0')))
+            ui_update(acc_id, "power", str(user.get('mining_power', '0')))
+            ui_update(acc_id, "time_left", time_left)
 
             if time_left == "00:00:00" or time_left.startswith("00:00"):
-                claim_mining(account["init_data"], account["username"])
+                claim_mining(acc_id, account["init_data"], account["username"], account["proxy"])
                 time.sleep(3)
-                start_mining(account["init_data"], account["username"])
+                start_mining(acc_id, account["init_data"], account["username"], account["proxy"])
                 time.sleep(5)
                 continue
 
@@ -116,77 +178,225 @@ def mining_worker(account):
             except:
                 seconds_left = 300
 
+            ui_update(acc_id, "mining_status", "Mining Live")
+            
             while seconds_left > 0:
                 hours = seconds_left // 3600
                 minutes = (seconds_left % 3600) // 60
                 seconds = seconds_left % 60
                 current = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-                with lock:
-                    print(f"\rTime Left {account['username']:15} : {current} (Live)", end="", flush=True)
-                
+                ui_update(acc_id, "time_left", current)
                 time.sleep(1)
                 seconds_left -= 1
 
-            # Waktu habis
-            with lock:
-                print(f"\n\nTime finished for {account['username']} ? Claiming & Restarting...")
-            claim_mining(account["init_data"], account["username"])
+            ui_log(acc_id, f"\nTime finished for {account['username']} -> Claiming & Restarting...")
+            claim_mining(acc_id, account["init_data"], account["username"], account["proxy"])
             time.sleep(3)
-            start_mining(account["init_data"], account["username"])
+            start_mining(acc_id, account["init_data"], account["username"], account["proxy"])
             time.sleep(5)
 
         except Exception as e:
-            with lock:
-                print(f"Error on {account['username']}: {e}")
+            ui_log(acc_id, f"Error in mining loop: {e}")
+            ui_update(acc_id, "mining_status", "Error in Mining Loop")
             time.sleep(10)
 
-
 def complete_tasks_for_account(account):
-    print(f"Processing tasks for {account['username']} ...")
-    tasks_data = api_request("GET", "get_tasks.php", account["init_data"])
+    acc_id = account['id']
+    ui_update(acc_id, "task_status", "Checking Tasks...")
+    ui_log(acc_id, f"Processing tasks...")
+    
+    tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"])
+    ui_log(acc_id, f"-> [DEBUG GET] Raw Response: {tasks_data}")
+    
     tasks = tasks_data.get('tasks', []) if tasks_data.get('success') else []
-    
     pending = [t for t in tasks if not t.get('is_completed')]
-    print(f"   Found {len(pending)} pending tasks.")
+    ui_log(acc_id, f"Found {len(pending)} pending tasks out of {len(tasks)} total tasks.")
     
-    for i, task in enumerate(pending, 1):
-        print(f"   [{i}/{len(pending)}] Completing: {task['title']}")
-        result = api_request("POST", "complete_task.php", account["init_data"], {"task_id": task['id']})
-        status = "Success" if result.get('success') else "Failed"
-        print(f"      Status: {status}")
-        if i < len(pending):
-            time.sleep(30)
-    print(f"   Task completion for {account['username']} finished.\n")
-
-
-def main():
-    accounts = load_all_init_data("data.txt")
-    
-    if not accounts:
-        print("No accounts found!")
+    if len(pending) == 0:
+        ui_update(acc_id, "task_status", "No Tasks/Completed")
         return
 
-    print("Starting Auto Task Completion for all accounts...\n")
-    for account in accounts:
-        complete_tasks_for_account(account)
+    for i, task in enumerate(pending, 1):
+        ui_update(acc_id, "task_status", f"Doing Task {i}/{len(pending)}")
+        ui_log(acc_id, f"\n[{i}/{len(pending)}] Completing: {task['title']}")
+        
+        if task.get('type') == 'telegram_chat':
+            ui_log(acc_id, f"   [WARNING] Task tipe 'telegram_chat' terdeteksi! Pastikan join manual.")
+            ui_log(acc_id, f"   [LINK] -> {task.get('link')}")
+            
+        payload = {"task_id": task['id']}
+        ui_log(acc_id, f"   -> [DEBUG POST] Endpoint: complete_task.php | Payload: {payload}")
+        
+        result = api_request("POST", "complete_task.php", account["init_data"], payload, proxy=account["proxy"])
+        
+        if result.get('success'):
+            ui_log(acc_id, f"   ✅ Status: Success | Response: {result}")
+        else:
+            ui_log(acc_id, f"   ❌ Status: Failed | Response: {result}")
+            try:
+                with open("failed.log", "a", encoding="utf-8") as f:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"[{ts}] [{account['username']}] Task: {task.get('title')} | Payload: {payload} | Response: {result}\n")
+            except:
+                pass
+            
+        if i < len(pending):
+            time.sleep(30)
+            
+    ui_log(acc_id, "Task completion finished.")
+    ui_update(acc_id, "task_status", "Tasks Completed")
 
-    print("\nStarting Parallel Mining for all accounts...\n")
-    
-    threads = []
-    for account in accounts:
-        t = threading.Thread(target=mining_worker, args=(account,), daemon=True)
-        t.start()
-        threads.append(t)
-        time.sleep(2)
+class GramBotApp(App):
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+    #top_panel {
+        height: 40%;
+        border-bottom: solid green;
+    }
+    #bottom_panel {
+        height: 60%;
+        layout: vertical;
+    }
+    #log_title {
+        text-align: center;
+        background: $boost;
+        color: yellow;
+        text-style: bold;
+    }
+    RichLog {
+        height: 100%;
+        border: solid $primary;
+    }
+    """
 
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        print("\n\nProgram stopped by user.")
-        sys.exit(0)
+    BINDINGS = [
+        ("q", "quit", "Quit")
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.accounts = []
+        self.logs_db = {}
+        self.active_log_id = None
+        self.table_keys = {}
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="top_panel"):
+            yield DataTable(id="accounts_table")
+        with Vertical(id="bottom_panel"):
+            yield Label("SELECT AN ACCOUNT ABOVE TO VIEW LOGS", id="log_title")
+            yield RichLog(id="account_log", highlight=True, markup=True, max_lines=500)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        
+        table.add_column("ID", key="id")
+        table.add_column("Username", key="username")
+        table.add_column("Proxy", key="proxy")
+        table.add_column("Balance (USD)", key="balance")
+        table.add_column("Tokens", key="tokens")
+        table.add_column("Energy", key="energy")
+        table.add_column("Referrals", key="referrals")
+        table.add_column("Rate", key="rate")
+        table.add_column("Power", key="power")
+        table.add_column("Task Status", key="task_status")
+        table.add_column("Mining Status", key="mining_status")
+        table.add_column("Time Left", key="time_left")
+        
+        table.cursor_type = "row"
+
+        self.accounts = load_all_init_data("data.txt")
+        proxies = load_proxies("proxy.txt")
+        
+        if not self.accounts:
+            self.query_one("#log_title").update("[red]No accounts found in data.txt![/red]")
+            return
+
+        for account in self.accounts:
+            account["proxy"] = get_random_proxy(proxies)
+            acc_id = account["id"]
+            self.logs_db[acc_id] = []
+            proxy_short = account["proxy"].split('@')[-1] if account["proxy"] else "Tanpa Proxy"
+            
+            row_key = str(acc_id)
+            self.table_keys[acc_id] = row_key
+            table.add_row(
+                str(acc_id), 
+                account["username"], 
+                proxy_short, 
+                "-", "-", "-", "-", "-", "-", "Waiting...", "Initializing...", "-",
+                key=row_key
+            )
+
+        self.start_bot_threads()
+
+    def start_bot_threads(self):
+        def worker_flow():
+            task_threads = []
+            for account in self.accounts:
+                t = threading.Thread(target=complete_tasks_for_account, args=(account,))
+                t.start()
+                task_threads.append(t)
+                time.sleep(2)
+            
+            for account in self.accounts:
+                t = threading.Thread(target=mining_worker, args=(account,), daemon=True)
+                t.start()
+                time.sleep(2)
+
+        coordinator = threading.Thread(target=worker_flow, daemon=True)
+        coordinator.start()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        try:
+            row_key = event.row_key.value
+            acc_id = int(row_key)
+            self.active_log_id = acc_id
+            
+            username = f"Account {acc_id}"
+            for acc in self.accounts:
+                if acc['id'] == acc_id:
+                    username = acc['username']
+                    break
+            
+            self.query_one("#log_title").update(f"--- LOGS FOR: [cyan]{username}[/cyan] ---")
+            
+            rich_log = self.query_one(RichLog)
+            rich_log.clear()
+            for msg in self.logs_db.get(acc_id, []):
+                rich_log.write(msg)
+        except Exception:
+            pass
+
+    def add_account_log(self, account_id, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_msg = f"[{timestamp}] {message}"
+        
+        if account_id in self.logs_db:
+            self.logs_db[account_id].append(formatted_msg)
+            if len(self.logs_db[account_id]) > 500:
+                self.logs_db[account_id].pop(0)
+                
+        if self.active_log_id == account_id:
+            rich_log = self.query_one(RichLog)
+            rich_log.write(formatted_msg)
+
+    def update_account_table(self, account_id, column, value):
+        table = self.query_one(DataTable)
+        row_key = self.table_keys.get(account_id)
+        if not row_key: return
+
+        try:
+            table.update_cell(row_key, column, value)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    UI_APP = GramBotApp()
+    UI_APP.run()
