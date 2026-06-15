@@ -1,3 +1,4 @@
+textual==8.2.7
 fake_useragent==2.2.0
 Faker==40.23.0
 Requests==2.34.2
