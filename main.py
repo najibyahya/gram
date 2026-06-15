@@ -232,6 +232,8 @@ def complete_tasks_for_account(account):
         
         if result.get('success'):
             ui_log(acc_id, f"   ✅ Status: Success | Response: {result}")
+            if 'new_balance' in result:
+                ui_update(acc_id, "balance", f"{result['new_balance']} (Updated)")
         else:
             ui_log(acc_id, f"   ❌ Status: Failed | Response: {result}")
             try:
