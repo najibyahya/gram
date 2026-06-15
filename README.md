@@ -13,7 +13,7 @@ An advanced automated bot for Gramnetwork supporting multiple accounts, parallel
 - **Auto Error Logging**: Failed tasks are automatically dumped into `failed.log` for easy troubleshooting.
 
 ## 📝 Register
-- You can register using this [Link Register](https://t.me/Gramnetwork_bot?startapp=2113168134)
+- You can register using this [Link Register](https://t.me/Gramnetwork_bot?startapp=6204082135)
 
 ## 🛠 Requirements
 - Python 3.8 or higher
