@@ -1,4 +1,4 @@
-import requests
+from curl_cffi import requests
 import urllib.parse
 import time
 import sys
@@ -89,16 +89,15 @@ def api_request(method, endpoint, init_data, payload=None, proxy=None, acc_id=No
     
     data = {"success": False, "error": "Unknown error"}
     try:
+        decoded_init = urllib.parse.unquote(init_data)
+        
         if method == "GET":
-            full_url = f"{url}?initData={init_data}"
-            resp = requests.get(full_url, headers=headers, proxies=proxies, timeout=30)
+            resp = requests.get(url, params={"initData": decoded_init}, headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
         else:
-            headers["content-type"] = "application/x-www-form-urlencoded"
-            body = f"initData={init_data}"
+            data_payload = {"initData": decoded_init}
             if payload:
-                for k, v in payload.items():
-                    body += f"&{k}={v}"
-            resp = requests.post(url, data=body, headers=headers, proxies=proxies, timeout=30)
+                data_payload.update(payload)
+            resp = requests.post(url, data=data_payload, headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
         
         try:
             data = resp.json()
