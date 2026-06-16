@@ -61,7 +61,7 @@ def get_headers():
         "User-Agent": ua.random
     }
 
-def api_request(method, endpoint, init_data, payload=None, proxy=None):
+def api_request(method, endpoint, init_data, payload=None, proxy=None, acc_id=None, username=None):
     base_url = "https://app.gramnetwork.online/api/"
     url = base_url + endpoint
     
@@ -87,6 +87,7 @@ def api_request(method, endpoint, init_data, payload=None, proxy=None):
     if proxy:
         proxies = {"http": proxy, "https": proxy}
     
+    data = {"success": False, "error": "Unknown error"}
     try:
         if method == "GET":
             full_url = f"{url}?initData={init_data}"
@@ -100,11 +101,28 @@ def api_request(method, endpoint, init_data, payload=None, proxy=None):
             resp = requests.post(url, data=body, headers=headers, proxies=proxies, timeout=30)
         
         try:
-            return resp.json()
+            data = resp.json()
         except:
-            return {"success": False, "raw_text": resp.text[:100]}
+            data = {"success": False, "raw_text": resp.text[:100]}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        data = {"success": False, "error": str(e)}
+
+    # Global UI Debug Logging
+    if acc_id is not None:
+        payload_str = f" | Payload: {payload}" if payload else ""
+        ui_log(acc_id, f"-> [DEBUG {method}] {endpoint}{payload_str} | Response: {data}")
+
+    # Global Error Logging
+    if not data.get("success") and username:
+        try:
+            with open("failed.log", "a", encoding="utf-8") as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                payload_str = f" | Payload: {payload}" if payload else ""
+                f.write(f"[{ts}] [{username}] API Error: {endpoint} {method}{payload_str} | Response: {data}\n")
+        except:
+            pass
+
+    return data
 
 def ui_log(account_id, message):
     if UI_APP:
@@ -117,19 +135,19 @@ def ui_update(account_id, column, value):
 def claim_mining(account_id, init_data, username, proxy):
     ui_log(account_id, f"[?] Claim Mining for {username} ...")
     ui_update(account_id, "mining_status", "Claiming Mining...")
-    for attempt in range(1, 6):
-        result = api_request("POST", "claim_mining.php", init_data, proxy=proxy)
+    for attempt in range(1, 4):
+        result = api_request("POST", "claim_mining.php", init_data, proxy=proxy, acc_id=account_id, username=username)
         if result.get('success'):
             ui_log(account_id, "✅ Claim Mining SUCCESS")
             return True
-        time.sleep(5)
+        time.sleep(3)
     ui_log(account_id, "❌ Claim Mining FAILED after retries")
     return False
 
 def start_mining(account_id, init_data, username, proxy):
     ui_log(account_id, f"[?] Starting Mining for {username} ...")
     ui_update(account_id, "mining_status", "Starting Mining...")
-    result = api_request("POST", "start_mining.php", init_data, proxy=proxy)
+    result = api_request("POST", "start_mining.php", init_data, proxy=proxy, acc_id=account_id, username=username)
     if result.get('success'):
         ui_log(account_id, "✅ Start Mining SUCCESS")
         return True
@@ -139,24 +157,27 @@ def start_mining(account_id, init_data, username, proxy):
 
 def mining_worker(account):
     acc_id = account['id']
-    ui_log(acc_id, f"Mining Worker started for {account['username']} (Proxy: {account['proxy'] or 'Tanpa Proxy'})")
+    username = account['username']
+    ui_log(acc_id, f"Mining Worker started for {username} (Proxy: {account['proxy'] or 'Tanpa Proxy'})")
     
     while True:
         try:
             ui_update(acc_id, "mining_status", "Fetching User Data...")
-            result = api_request("GET", "get_user_data.php", account["init_data"], proxy=account["proxy"])
+            result = api_request("GET", "get_user_data.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=username)
             
             if not result.get("success") or "user" not in result:
-                ui_log(acc_id, f"Failed to get user data: {result}")
+                ui_log(acc_id, f"Failed to get user data.")
                 ui_update(acc_id, "mining_status", "Data Fetch Failed (Retrying)")
                 time.sleep(10)
                 continue
 
             user = result["user"]
             account["username"] = user.get("username", account["username"])
+            username = account["username"]
             time_left = user.get('time_left', '00:00:00')
+            mining_status_str = user.get('mining_status', '')
 
-            ui_update(acc_id, "username", account["username"])
+            ui_update(acc_id, "username", username)
             ui_update(acc_id, "balance", f"{user.get('total_balance', '0')} ({user.get('usd_balance', '0')} USD)")
             ui_update(acc_id, "tokens", str(user.get('tokens_earned', '0')))
             ui_update(acc_id, "energy", str(user.get('energy', '0')))
@@ -165,10 +186,11 @@ def mining_worker(account):
             ui_update(acc_id, "power", str(user.get('mining_power', '0')))
             ui_update(acc_id, "time_left", time_left)
 
-            if time_left == "00:00:00" or time_left.startswith("00:00"):
-                claim_mining(acc_id, account["init_data"], account["username"], account["proxy"])
+            if time_left == "00:00:00" or time_left.startswith("00:00") or mining_status_str.lower() == "ready to claim":
+                ui_log(acc_id, "Ready to claim! Executing Claim -> Start cycle.")
+                claim_mining(acc_id, account["init_data"], username, account["proxy"])
                 time.sleep(3)
-                start_mining(acc_id, account["init_data"], account["username"], account["proxy"])
+                start_mining(acc_id, account["init_data"], username, account["proxy"])
                 time.sleep(5)
                 continue
 
@@ -190,10 +212,10 @@ def mining_worker(account):
                 time.sleep(1)
                 seconds_left -= 1
 
-            ui_log(acc_id, f"\nTime finished for {account['username']} -> Claiming & Restarting...")
-            claim_mining(acc_id, account["init_data"], account["username"], account["proxy"])
+            ui_log(acc_id, f"\nTime finished for {username} -> Claiming & Restarting...")
+            claim_mining(acc_id, account["init_data"], username, account["proxy"])
             time.sleep(3)
-            start_mining(acc_id, account["init_data"], account["username"], account["proxy"])
+            start_mining(acc_id, account["init_data"], username, account["proxy"])
             time.sleep(5)
 
         except Exception as e:
@@ -203,11 +225,11 @@ def mining_worker(account):
 
 def complete_tasks_for_account(account):
     acc_id = account['id']
+    username = account['username']
     ui_update(acc_id, "task_status", "Checking Tasks...")
     ui_log(acc_id, f"Processing tasks...")
     
-    tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"])
-    ui_log(acc_id, f"-> [DEBUG GET] Raw Response: {tasks_data}")
+    tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=username)
     
     tasks = tasks_data.get('tasks', []) if tasks_data.get('success') else []
     pending = [t for t in tasks if not t.get('is_completed')]
@@ -226,22 +248,14 @@ def complete_tasks_for_account(account):
             ui_log(acc_id, f"   [LINK] -> {task.get('link')}")
             
         payload = {"task_id": task['id']}
-        ui_log(acc_id, f"   -> [DEBUG POST] Endpoint: complete_task.php | Payload: {payload}")
-        
-        result = api_request("POST", "complete_task.php", account["init_data"], payload, proxy=account["proxy"])
+        result = api_request("POST", "complete_task.php", account["init_data"], payload, proxy=account["proxy"], acc_id=acc_id, username=username)
         
         if result.get('success'):
-            ui_log(acc_id, f"   ✅ Status: Success | Response: {result}")
+            ui_log(acc_id, f"   ✅ Status: Success")
             if 'new_balance' in result:
                 ui_update(acc_id, "balance", f"{result['new_balance']} (Updated)")
         else:
-            ui_log(acc_id, f"   ❌ Status: Failed | Response: {result}")
-            try:
-                with open("failed.log", "a", encoding="utf-8") as f:
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    f.write(f"[{ts}] [{account['username']}] Task: {task.get('title')} | Payload: {payload} | Response: {result}\n")
-            except:
-                pass
+            ui_log(acc_id, f"   ❌ Status: Failed")
             
         if i < len(pending):
             time.sleep(30)
@@ -338,16 +352,35 @@ class GramBotApp(App):
         self.start_bot_threads()
 
     def start_bot_threads(self):
-        def worker_flow():
-            task_threads = []
-            for account in self.accounts:
-                t = threading.Thread(target=complete_tasks_for_account, args=(account,))
-                t.start()
-                task_threads.append(t)
-                time.sleep(2)
+        def account_workflow(account):
+            acc_id = account['id']
+            # 1. Get User Data First
+            ui_update(acc_id, "mining_status", "Fetching User Data (Init)...")
+            result = api_request("GET", "get_user_data.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=account['username'])
             
+            if result.get("success") and "user" in result:
+                user = result["user"]
+                account["username"] = user.get("username", account["username"])
+                ui_update(acc_id, "username", account["username"])
+                ui_update(acc_id, "balance", f"{user.get('total_balance', '0')} ({user.get('usd_balance', '0')} USD)")
+                ui_update(acc_id, "tokens", str(user.get('tokens_earned', '0')))
+                ui_update(acc_id, "energy", str(user.get('energy', '0')))
+                ui_update(acc_id, "referrals", str(user.get('total_referrals', '0')))
+                ui_update(acc_id, "rate", str(user.get('mining_rate', '0')))
+                ui_update(acc_id, "power", str(user.get('mining_power', '0')))
+                ui_update(acc_id, "time_left", user.get('time_left', '00:00:00'))
+            else:
+                ui_log(acc_id, f"Failed initial get_user_data. Proceeding anyway...")
+
+            # 2. Complete Tasks in separate thread so mining can start
+            threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
+
+            # 3. Enter Mining Loop
+            mining_worker(account)
+
+        def worker_flow():
             for account in self.accounts:
-                t = threading.Thread(target=mining_worker, args=(account,), daemon=True)
+                t = threading.Thread(target=account_workflow, args=(account,), daemon=True)
                 t.start()
                 time.sleep(2)
 
