@@ -192,6 +192,8 @@ def mining_worker(account):
                 time.sleep(3)
                 start_mining(acc_id, account["init_data"], username, account["proxy"])
                 time.sleep(5)
+                # Jalankan cek task setelah claim
+                threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
                 continue
 
             try:
@@ -217,6 +219,8 @@ def mining_worker(account):
             time.sleep(3)
             start_mining(acc_id, account["init_data"], username, account["proxy"])
             time.sleep(5)
+            # Jalankan cek task setelah claim
+            threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
 
         except Exception as e:
             ui_log(acc_id, f"Error in mining loop: {e}")
