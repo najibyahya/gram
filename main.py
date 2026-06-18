@@ -89,15 +89,24 @@ def api_request(method, endpoint, init_data, payload=None, proxy=None, acc_id=No
     
     data = {"success": False, "error": "Unknown error"}
     try:
-        decoded_init = urllib.parse.unquote(init_data)
-        
-        if method == "GET":
-            resp = requests.get(url, params={"initData": decoded_init}, headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
+        # Normalize init_data: Jika mengandung '=', berarti belum di-encode.
+        # Jika tidak ada '=', berarti sudah dari sananya URL-Encoded (misal dari hasil tgWebAppData).
+        # Kita JANGAN pernah me-re-encode data yang sudah di-encode karena Python bisa mengubah karakter tertentu (seperti * atau ~) yang akan merusak Hash Telegram!
+        if "=" in init_data:
+            safe_init_data = urllib.parse.quote(init_data)
         else:
-            data_payload = {"initData": decoded_init}
+            safe_init_data = init_data
+            
+        if method == "GET":
+            full_url = f"{url}?initData={safe_init_data}"
+            resp = requests.get(full_url, headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
+        else:
+            headers["content-type"] = "application/x-www-form-urlencoded"
+            body = f"initData={safe_init_data}"
             if payload:
-                data_payload.update(payload)
-            resp = requests.post(url, data=data_payload, headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
+                for k, v in payload.items():
+                    body += f"&{k}={urllib.parse.quote(str(v))}"
+            resp = requests.post(url, data=body.encode('utf-8'), headers=headers, proxies=proxies, timeout=30, impersonate="chrome110")
         
         try:
             data = resp.json()
@@ -226,6 +235,20 @@ def mining_worker(account):
             ui_update(acc_id, "mining_status", "Error in Mining Loop")
             time.sleep(10)
 
+def claim_boost(account_id, init_data, username, proxy):
+    ui_log(account_id, f"[?] Claiming Power Boost for {username} ...")
+    ui_update(account_id, "boost_status", "Claiming...")
+    for attempt in range(1, 4):
+        result = api_request("POST", "boost_power.php", init_data, proxy=proxy, acc_id=account_id, username=username)
+        if result.get('success'):
+            ui_log(account_id, f"✅ Boost Claimed: {result.get('message', 'Success')}")
+            ui_update(account_id, "boost_status", "Claimed (4h)")
+            return True
+        time.sleep(3)
+    ui_log(account_id, f"❌ Boost Claim FAILED after retries")
+    ui_update(account_id, "boost_status", "Failed")
+    return False
+
 def complete_tasks_for_account(account):
     acc_id = account['id']
     username = account['username']
@@ -234,6 +257,17 @@ def complete_tasks_for_account(account):
     
     tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=username)
     
+    if tasks_data.get('success'):
+        boost_time_left = tasks_data.get('boost_time_left', 0)
+        if boost_time_left <= 0:
+            claim_boost(acc_id, account["init_data"], username, account["proxy"])
+            time.sleep(2)
+        else:
+            hours = (boost_time_left // 1000) // 3600
+            mins = ((boost_time_left // 1000) % 3600) // 60
+            ui_log(acc_id, f"⏳ Boost in cooldown: {hours}h {mins}m left")
+            ui_update(acc_id, "boost_status", f"Cooldown ({hours}h {mins}m)")
+            
     tasks = tasks_data.get('tasks', []) if tasks_data.get('success') else []
     pending = [t for t in tasks if not t.get('is_completed')]
     ui_log(acc_id, f"Found {len(pending)} pending tasks out of {len(tasks)} total tasks.")
@@ -324,6 +358,7 @@ class GramBotApp(App):
         table.add_column("Rate", key="rate")
         table.add_column("Power", key="power")
         table.add_column("Task Status", key="task_status")
+        table.add_column("Boost Status", key="boost_status")
         table.add_column("Mining Status", key="mining_status")
         table.add_column("Time Left", key="time_left")
         
@@ -348,7 +383,7 @@ class GramBotApp(App):
                 str(acc_id), 
                 account["username"], 
                 proxy_short, 
-                "-", "-", "-", "-", "-", "-", "Waiting...", "Initializing...", "-",
+                "-", "-", "-", "-", "-", "-", "Waiting...", "Waiting...", "Initializing...", "-",
                 key=row_key
             )
 
