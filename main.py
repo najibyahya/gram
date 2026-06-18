@@ -255,7 +255,17 @@ def complete_tasks_for_account(account):
     ui_update(acc_id, "task_status", "Checking Tasks...")
     ui_log(acc_id, f"Processing tasks...")
     
-    tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=username)
+    tasks_data = {}
+    for attempt in range(1, 4):
+        tasks_data = api_request("GET", "get_tasks.php", account["init_data"], proxy=account["proxy"], acc_id=acc_id, username=username)
+        if tasks_data.get('success'):
+            break
+        time.sleep(3)
+        
+    if not tasks_data.get('success'):
+        ui_log(acc_id, f"❌ Failed to get tasks after retries")
+        ui_update(acc_id, "task_status", "Failed")
+        return
     
     if tasks_data.get('success'):
         boost_time_left = tasks_data.get('boost_time_left', 0)
@@ -473,4 +483,3 @@ class GramBotApp(App):
 if __name__ == "__main__":
     UI_APP = GramBotApp()
     UI_APP.run()
- 
