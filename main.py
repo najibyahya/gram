@@ -188,20 +188,44 @@ def mining_worker(account):
             ui_update(acc_id, "username", username)
             ui_update(acc_id, "balance", f"{user.get('total_balance', '0')} ({user.get('usd_balance', '0')} USD)")
             ui_update(acc_id, "tokens", str(user.get('tokens_earned', '0')))
-            ui_update(acc_id, "energy", str(user.get('energy', '0')))
+            
+            energy_val = 0
+            try:
+                energy_val = int(user.get('energy', 0))
+            except:
+                pass
+            ui_update(acc_id, "energy", str(energy_val))
             ui_update(acc_id, "referrals", str(user.get('total_referrals', '0')))
             ui_update(acc_id, "rate", str(user.get('mining_rate', '0')))
             ui_update(acc_id, "power", str(user.get('mining_power', '0')))
             ui_update(acc_id, "time_left", time_left)
 
+            energy_boost_time_left = user.get('energy_boost_time_left', 0)
+            if energy_boost_time_left <= 0:
+                success = claim_energy_boost(acc_id, account["init_data"], username, account["proxy"])
+                if success:
+                    energy_val += 10
+                    ui_update(acc_id, "energy", str(energy_val))
+            else:
+                hours = energy_boost_time_left // 3600
+                mins = (energy_boost_time_left % 3600) // 60
+                ui_update(acc_id, "energy_boost_status", f"Cooldown ({hours}h {mins}m)")
+
             if time_left == "00:00:00" or time_left.startswith("00:00") or mining_status_str.lower() == "ready to claim":
-                ui_log(acc_id, "Ready to claim! Executing Claim -> Start cycle.")
-                claim_mining(acc_id, account["init_data"], username, account["proxy"])
-                time.sleep(3)
-                start_mining(acc_id, account["init_data"], username, account["proxy"])
-                time.sleep(5)
-                # Jalankan cek task setelah claim
-                threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
+                if mining_status_str.lower() != "inactive":
+                    ui_log(acc_id, "Mining finished. Claiming...")
+                    claim_mining(acc_id, account["init_data"], username, account["proxy"])
+                    time.sleep(3)
+                
+                if energy_val > 0:
+                    start_mining(acc_id, account["init_data"], username, account["proxy"])
+                    time.sleep(5)
+                    # Jalankan cek task setelah start
+                    threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
+                else:
+                    ui_log(acc_id, "Energy is 0! Cannot start mining, waiting 60s...")
+                    ui_update(acc_id, "mining_status", "Out of Energy (Waiting)")
+                    time.sleep(60)
                 continue
 
             try:
@@ -222,18 +246,29 @@ def mining_worker(account):
                 time.sleep(1)
                 seconds_left -= 1
 
-            ui_log(acc_id, f"\nTime finished for {username} -> Claiming & Restarting...")
-            claim_mining(acc_id, account["init_data"], username, account["proxy"])
-            time.sleep(3)
-            start_mining(acc_id, account["init_data"], username, account["proxy"])
-            time.sleep(5)
-            # Jalankan cek task setelah claim
-            threading.Thread(target=complete_tasks_for_account, args=(account,), daemon=True).start()
+            ui_log(acc_id, f"\nTime finished for {username} -> Fetching new state...")
+            continue
 
         except Exception as e:
             ui_log(acc_id, f"Error in mining loop: {e}")
             ui_update(acc_id, "mining_status", "Error in Mining Loop")
             time.sleep(10)
+
+def claim_energy_boost(account_id, init_data, username, proxy):
+    ui_log(account_id, f"[?] Claiming Energy Boost for {username} ...")
+    ui_update(account_id, "energy_boost_status", "Claiming...")
+    for attempt in range(1, 4):
+        result = api_request("POST", "boost_energy.php", init_data, proxy=proxy, acc_id=account_id, username=username)
+        if result.get('success'):
+            ui_log(account_id, f"✅ Energy Boost Claimed: {result.get('message', 'Success')}")
+            ui_update(account_id, "energy_boost_status", "Claimed (2h)")
+            if 'new_energy' in result:
+                ui_update(account_id, "energy", str(result['new_energy']))
+            return True
+        time.sleep(3)
+    ui_log(account_id, f"❌ Energy Boost Claim FAILED after retries")
+    ui_update(account_id, "energy_boost_status", "Failed")
+    return False
 
 def claim_boost(account_id, init_data, username, proxy):
     ui_log(account_id, f"[?] Claiming Power Boost for {username} ...")
@@ -369,6 +404,7 @@ class GramBotApp(App):
         table.add_column("Power", key="power")
         table.add_column("Task Status", key="task_status")
         table.add_column("Boost Status", key="boost_status")
+        table.add_column("Energy Boost", key="energy_boost_status")
         table.add_column("Mining Status", key="mining_status")
         table.add_column("Time Left", key="time_left")
         
@@ -393,7 +429,7 @@ class GramBotApp(App):
                 str(acc_id), 
                 account["username"], 
                 proxy_short, 
-                "-", "-", "-", "-", "-", "-", "Waiting...", "Waiting...", "Initializing...", "-",
+                "-", "-", "-", "-", "-", "-", "Waiting...", "Waiting...", "Waiting...", "Initializing...", "-",
                 key=row_key
             )
 
