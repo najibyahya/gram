@@ -11,6 +11,8 @@ An advanced automated bot for Gramnetwork supporting multiple accounts, parallel
 - **Proxy Rotation Support**: Avoid WAF/Cloudflare blocks with built-in proxy rotation (`proxy.txt`).
 - **Comprehensive Auto-Tracking**: Tracks Live Countdown, Balance (USD), Tokens, Energy, Referrals, Rate, and Power.
 - **Auto Error Logging**: Failed tasks are automatically dumped into `failed.log` for easy troubleshooting.
+- **Claim Boost Mining**: Auto Claim Boost Mining every 4 hours
+- **Claim Boost Energy**: Auto Claim Boost Energy every 2 hours
 
 ## 📝 Register
 - You can register using this [Link Register](https://t.me/Gramnetwork_bot?startapp=6204082135)
